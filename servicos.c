@@ -1,242 +1,512 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "servicos.h" // Inclui o cabeçalho que define estruturas (DadosSistema) e funções de serviço.
+#include "servicos.h"
 
-// --- Função Auxiliar ---
+// Protótipo da função auxiliar de ordenação (necessária para qsort ou bubble sort)
+void trocar_alunos(Aluno *a, Aluno *b); 
+int buscar_aluno_por_ra(const DadosSistema *sistema, const char *ra);
+int buscar_turma_por_id(const DadosSistema *sistema, int id_turma);
+void calcular_media(Aluno *aluno);
+
+// --- 1. Autenticação ---
 
 /**
- * @brief Limpa o buffer de entrada (stdin).
- * Essencial após o uso de scanf() ou antes de um fgets() para 
- * descartar quaisquer caracteres residuais, incluindo a quebra de linha ('\n').
+ * @brief Tenta autenticar o usuário no sistema.
+ * * Verifica se o login e senha correspondem a um usuário fixo predefinido e, 
+ * se sim, define o nível de acesso do usuário.
+ * * @param nivel_acesso Ponteiro para armazenar o nível de acesso (0=Aluno, 1=Prof, 2=Admin).
+ * @return int 1 se o login for bem-sucedido, 0 caso contrário.
  */
-void limpar_buffer() {
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF);
-}
+int realizar_login(int *nivel_acesso) {
+    // Usuários fixos do sistema (você pode customizar isso)
+    Usuario usuarios_fixos[] = {
+        {"admin", "master", NIVEL_ADMIN},
+        {"222", "senha222", NIVEL_PROFESSOR},
+        {"111", "senha111", NIVEL_ALUNO}
+    };
+    int total_usuarios = sizeof(usuarios_fixos) / sizeof(Usuario);
 
-// --- Função Principal ---
+    char login[TAM_RA];
+    char senha[TAM_SENHA];
 
-int main() {
-    DadosSistema sistema;           // Estrutura principal que armazena todos os dados (alunos, turmas).
-    int opcao;                      // Variável para armazenar a opção escolhida no menu.
-    int nivel_acesso = -1;          // -1 significa que o usuário ainda não está logado.
-    
-    // 1. Carrega dados persistentes (de arquivo) para a estrutura do sistema.
-    carregar_dados(&sistema);
+    printf("\n--- LOGIN ---\n");
+    printf("Login: ");
+    fgets(login, TAM_RA, stdin);
+    login[strcspn(login, "\n")] = 0;
 
-    // 2. Tenta logar o usuário antes de iniciar o loop principal.
-    if (!realizar_login(&nivel_acesso)) {
-        // Se a função realizar_login retornar 0 (falha), encerra o programa.
-        printf("Falha no login ou usuario/senha invalidos. Encerrando o sistema.\n");
-        return 1; 
+    printf("Senha: ");
+    fgets(senha, TAM_SENHA, stdin);
+    senha[strcspn(senha, "\n")] = 0;
+
+    // Busca o usuário na lista
+    for (int i = 0; i < total_usuarios; i++) {
+        if (strcmp(login, usuarios_fixos[i].login) == 0 && 
+            strcmp(senha, usuarios_fixos[i].senha) == 0) {
+            
+            *nivel_acesso = usuarios_fixos[i].nivel_acesso;
+            printf("\nLogin SUCESSO! Nivel de Acesso: %d.\n", *nivel_acesso);
+            return 1; // Sucesso
+        }
     }
 
-    // 3. Loop principal do menu (Continua até que a opção de 'Sair' seja escolhida)
-    do {
-        // 3.1. Exibe o cabeçalho do menu, identificando o nível de acesso do usuário.
-        printf("\n--- MENU PRINCIPAL (%s) ---\n", 
-               (nivel_acesso == NIVEL_ADMIN) ? "ADMINISTRADOR" : // Se for ADMIN
-               (nivel_acesso == NIVEL_PROFESSOR) ? "PROFESSOR" : // Se for PROFESSOR
-               "ALUNO");                                         // Caso contrário (ALUNO)
-               
-        // Exibe o status atual do sistema (quantas turmas/alunos cadastrados).
-        printf("Turmas: %d / %d | Alunos: %d / %d\n", sistema.total_turmas, MAX_TURMAS, sistema.total_alunos, MAX_ALUNOS);
-        printf("-----------------------------\n");
-        
-        // --- Opções Comuns a Professor e Admin (CRUD de dados) ---
-        // As opções 1 a 3 só são exibidas se o nível de acesso for PROFESSOR ou superior (ADMIN).
-        if (nivel_acesso >= NIVEL_PROFESSOR) {
-            printf("1. Cadastrar Turma\n");
-            printf("2. Cadastrar Aluno\n");
-            printf("3. Lancar Notas e Calcular Media (PROF/ADMIN)\n");
-        }
+    *nivel_acesso = -1; // Falha
+    return 0; 
+}
 
-        // --- Opções Comuns a Todos ---
-        printf("4. Gerar Relatorio de Turma (TODOS)\n"); 
-        
-        // --- Opções Exclusivas do Admin (Manutenção e CRUD Total) ---
-        // As opções 5 a 8 só são exibidas se o nível de acesso for ADMINISTRADOR.
-        if (nivel_acesso == NIVEL_ADMIN) {
-            printf("5. Ordenar Alunos por Nome\n");
-            printf("-----------------------------\n");
-            printf("6. EDITAR Dados do Aluno\n");
-            printf("7. EXCLUIR Aluno (Logico)\n");
-            printf("8. EXCLUIR Turma (Logico + Cascata)\n");
-        }
-        
-        printf("9. Sair\n"); 
-        printf("Escolha uma opcao: ");
 
-        // 3.2. Leitura e tratamento de buffer para a opção escolhida.
-        if (scanf("%d", &opcao) != 1) {
-            limpar_buffer();
-            opcao = 0; // Se a entrada for inválida (não for um número), define como 0 (default/inválido).
+// --- 2. Persistência de Dados (I/O) ---
+
+/**
+ * @brief Carrega a estrutura de dados (alunos, turmas) de um arquivo binário.
+ * Se o arquivo não existir ou for inválido, inicializa a estrutura do sistema.
+ * @param sistema Ponteiro para a estrutura DadosSistema a ser carregada.
+ */
+void carregar_dados(DadosSistema *sistema) {
+    FILE *f = fopen(NOME_ARQUIVO, "rb");
+
+    if (f == NULL || fread(sistema, sizeof(DadosSistema), 1, f) != 1) {
+        printf("AVISO: Arquivo de dados nao encontrado ou invalido. Inicializando o sistema...\n");
+        // Inicializa o sistema se a leitura falhar
+        sistema->total_turmas = 0;
+        sistema->total_alunos = 0;
+        // Marca todos como inativos (limpeza de memória)
+        for (int i = 0; i < MAX_TURMAS; i++) sistema->turmas[i].ativo = 0;
+        for (int i = 0; i < MAX_ALUNOS; i++) sistema->alunos[i].ativo = 0;
+    } else {
+        printf("SUCESSO: Dados carregados do arquivo '%s'.\n", NOME_ARQUIVO);
+        fclose(f);
+    }
+}
+
+/**
+ * @brief Salva a estrutura de dados (alunos, turmas) em um arquivo binário.
+ * @param sistema Ponteiro para a estrutura DadosSistema a ser salva.
+ */
+void salvar_dados(const DadosSistema *sistema) {
+    FILE *f = fopen(NOME_ARQUIVO, "wb");
+    if (f == NULL) {
+        printf("ERRO: Nao foi possivel abrir o arquivo para salvar os dados.\n");
+        return;
+    }
+
+    if (fwrite(sistema, sizeof(DadosSistema), 1, f) != 1) {
+        printf("ERRO: Falha ao escrever os dados no arquivo.\n");
+    } else {
+        // printf("SUCESSO: Dados salvos em '%s'.\n", NOME_ARQUIVO); // Comentado para evitar poluição no console
+    }
+
+    fclose(f);
+}
+
+
+// --- 3. Auxiliares e Busca ---
+
+/**
+ * @brief Busca o índice de um aluno ativo pelo RA.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param ra O Registro Acadêmico a ser buscado.
+ * @return int O índice do aluno no array, ou -1 se não for encontrado ou estiver inativo.
+ */
+int buscar_aluno_por_ra(const DadosSistema *sistema, const char *ra) {
+    for (int i = 0; i < MAX_ALUNOS; i++) {
+        // Busca apenas alunos ATIVOS
+        if (sistema->alunos[i].ativo == 1 && strcmp(sistema->alunos[i].ra, ra) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @brief Busca o índice de uma turma ativa pelo ID.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param id_turma O ID da turma a ser buscado.
+ * @return int O índice da turma no array, ou -1 se não for encontrada ou estiver inativa.
+ */
+int buscar_turma_por_id(const DadosSistema *sistema, int id_turma) {
+    for (int i = 0; i < MAX_TURMAS; i++) {
+        // Busca apenas turmas ATIVAS e com ID correspondente
+        if (sistema->turmas[i].ativo == 1 && sistema->turmas[i].id == id_turma) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @brief Exibe uma lista de todas as turmas ativas no sistema.
+ * Ajuda o usuário a escolher um ID.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ */
+void listar_todas_turmas(const DadosSistema *sistema) {
+    printf("\n--- Turmas Ativas ---\n");
+    int encontrou = 0;
+    for (int i = 0; i < MAX_TURMAS; i++) {
+        if (sistema->turmas[i].ativo == 1) {
+            printf("ID: %d | Nome: %s | Vagas: %d/%d\n", 
+                   sistema->turmas[i].id, 
+                   sistema->turmas[i].nome, 
+                   sistema->turmas[i].vagas_ocupadas, 
+                   sistema->turmas[i].vagas_maximas);
+            encontrou = 1;
+        }
+    }
+    if (!encontrou) {
+        printf("Nenhuma turma ativa cadastrada.\n");
+    }
+    printf("---------------------\n");
+}
+
+/**
+ * @brief Calcula a média aritmética das 3 notas de um aluno.
+ * @param aluno Ponteiro para a estrutura Aluno.
+ */
+void calcular_media(Aluno *aluno) {
+    aluno->media_final = (aluno->notas[0] + aluno->notas[1] + aluno->notas[2]) / 3.0f;
+}
+
+// --- 4. Gerenciamento (CREATE) ---
+
+/**
+ * @brief Adiciona uma nova turma ao sistema.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param nome Nome da nova turma.
+ * @param vagas Número máximo de vagas.
+ * @return int 1 se adicionada com sucesso, 0 caso contrário.
+ */
+int adicionar_turma(DadosSistema *sistema, const char *nome, int vagas) {
+    if (sistema->total_turmas >= MAX_TURMAS) {
+        // Limite máximo de turmas atingido
+        return 0;
+    }
+    if (vagas <= 0) {
+        printf("ERRO: O numero de vagas deve ser positivo.\n");
+        return 0;
+    }
+
+    // Procura a primeira posição inativa (liberada)
+    for (int i = 0; i < MAX_TURMAS; i++) {
+        if (sistema->turmas[i].ativo == 0) {
+            // Inicializa a nova turma
+            sistema->turmas[i].id = i + 1; // ID baseado no índice + 1 (para IDs > 0)
+            strncpy(sistema->turmas[i].nome, nome, TAM_NOME);
+            sistema->turmas[i].vagas_maximas = vagas;
+            sistema->turmas[i].vagas_ocupadas = 0;
+            sistema->turmas[i].ativo = 1;
+
+            sistema->total_turmas++;
+            return 1;
+        }
+    }
+    return 0; // Se não encontrou espaço ativo (embora o check inicial deve cobrir isso)
+}
+
+/**
+ * @brief Adiciona um novo aluno a uma turma específica.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param nome Nome do aluno.
+ * @param ra Registro Acadêmico do aluno.
+ * @param id_turma ID da turma a ser matriculado.
+ * @return int 1 se adicionado com sucesso, 0 caso contrário.
+ */
+int adicionar_aluno(DadosSistema *sistema, const char *nome, const char *ra, int id_turma) {
+    if (sistema->total_alunos >= MAX_ALUNOS) {
+        printf("ERRO: Limite maximo de alunos atingido.\n");
+        return 0;
+    }
+    if (buscar_aluno_por_ra(sistema, ra) != -1) {
+        printf("ERRO: RA '%s' ja cadastrado.\n", ra);
+        return 0;
+    }
+
+    int idx_turma = buscar_turma_por_id(sistema, id_turma);
+    if (idx_turma == -1) {
+        printf("ERRO: Turma ID %d nao encontrada ou inativa.\n", id_turma);
+        return 0;
+    }
+    if (sistema->turmas[idx_turma].vagas_ocupadas >= sistema->turmas[idx_turma].vagas_maximas) {
+        printf("ERRO: Turma '%s' esta cheia.\n", sistema->turmas[idx_turma].nome);
+        return 0;
+    }
+
+    // Procura a primeira posição inativa (liberada)
+    for (int i = 0; i < MAX_ALUNOS; i++) {
+        if (sistema->alunos[i].ativo == 0) {
+            // Inicializa o novo aluno
+            strncpy(sistema->alunos[i].ra, ra, TAM_RA);
+            strncpy(sistema->alunos[i].nome, nome, TAM_NOME);
+            sistema->alunos[i].id_turma = id_turma;
+            sistema->alunos[i].notas[0] = 0.0f;
+            sistema->alunos[i].notas[1] = 0.0f;
+            sistema->alunos[i].notas[2] = 0.0f;
+            sistema->alunos[i].media_final = 0.0f;
+            sistema->alunos[i].ativo = 1;
+
+            // Atualiza contadores
+            sistema->total_alunos++;
+            sistema->turmas[idx_turma].vagas_ocupadas++;
+            return 1;
+        }
+    }
+    return 0; // Falha (não deve acontecer se o total_alunos for verificado)
+}
+
+
+// --- 5. Gerenciamento (UPDATE) ---
+
+/**
+ * @brief Lança as notas N1, N2, N3 e atualiza a média de um aluno.
+ * Verifica o nível de acesso (deve ser PROFESSOR ou ADMIN).
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param ra RA do aluno.
+ * @param n1 Nota 1.
+ * @param n2 Nota 2.
+ * @param n3 Nota 3.
+ * @param nivel_acesso Nível de acesso do usuário logado.
+ * @return int 1 se as notas foram lançadas e a média atualizada, 0 caso contrário.
+ */
+int lancar_notas_e_atualizar_media(DadosSistema *sistema, const char *ra, float n1, float n2, float n3, int nivel_acesso) {
+    if (nivel_acesso < NIVEL_PROFESSOR) {
+        printf("ACESSO NEGADO: Apenas Professor ou Admin podem lancar notas.\n");
+        return 0;
+    }
+    
+    int idx_aluno = buscar_aluno_por_ra(sistema, ra);
+    if (idx_aluno == -1) {
+        printf("ERRO: Aluno com RA '%s' nao encontrado ou inativo.\n", ra);
+        return 0;
+    }
+    
+    // Atualiza as notas e calcula a média
+    sistema->alunos[idx_aluno].notas[0] = n1;
+    sistema->alunos[idx_aluno].notas[1] = n2;
+    sistema->alunos[idx_aluno].notas[2] = n3;
+    calcular_media(&sistema->alunos[idx_aluno]);
+    
+    printf("SUCESSO: Notas de '%s' lancadas (Media: %.2f).\n", 
+           sistema->alunos[idx_aluno].nome, 
+           sistema->alunos[idx_aluno].media_final);
+    return 1;
+}
+
+/**
+ * @brief Edita o nome e/ou a turma de um aluno.
+ * Permite a alteração do nome e/ou a transferência de turma de um aluno ativo.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param ra_antigo RA do aluno a ser editado.
+ * @param nome_novo Novo nome (se vazio, mantém o atual).
+ * @param id_turma_nova Novo ID da turma (se 0, mantém a atual).
+ * @return int 1 se a edição foi bem-sucedida, 0 caso contrário.
+ */
+int editar_dados_aluno(DadosSistema *sistema, const char *ra_antigo, const char *nome_novo, int id_turma_nova) {
+    int idx_aluno = buscar_aluno_por_ra(sistema, ra_antigo);
+    if (idx_aluno == -1) {
+        printf("ERRO: Aluno com RA '%s' nao encontrado ou inativo.\n", ra_antigo);
+        return 0;
+    }
+    Aluno *aluno = &sistema->alunos[idx_aluno];
+    
+    printf("Editando Aluno: %s (RA: %s)\n", aluno->nome, aluno->ra);
+    int alterado = 0;
+
+    // 1. Atualizar Nome
+    if (strlen(nome_novo) > 0) {
+        strncpy(aluno->nome, nome_novo, TAM_NOME);
+        printf("Nome atualizado para: %s\n", nome_novo);
+        alterado = 1;
+    }
+
+    // 2. Atualizar Turma (Transferência)
+    if (id_turma_nova != 0 && id_turma_nova != aluno->id_turma) {
+        int idx_turma_nova = buscar_turma_por_id(sistema, id_turma_nova);
+        
+        if (idx_turma_nova != -1) {
+            // Verifica vagas na nova turma
+            if (sistema->turmas[idx_turma_nova].vagas_ocupadas < sistema->turmas[idx_turma_nova].vagas_maximas) {
+                
+                // Libera vaga na turma antiga
+                int idx_turma_antiga = buscar_turma_por_id(sistema, aluno->id_turma);
+                if (idx_turma_antiga != -1) {
+                    sistema->turmas[idx_turma_antiga].vagas_ocupadas--;
+                }
+                
+                // Ocupa vaga na nova turma e atualiza o aluno
+                sistema->turmas[idx_turma_nova].vagas_ocupadas++;
+                aluno->id_turma = id_turma_nova;
+                printf("Turma atualizada para ID: %d (%s)\n", id_turma_nova, sistema->turmas[idx_turma_nova].nome);
+                alterado = 1;
+            } else {
+                printf("ERRO: Nova turma ID %d esta cheia. Turma nao alterada.\n", id_turma_nova);
+                return 0; // Falha na edição
+            }
         } else {
-            limpar_buffer(); // Limpa o '\n' restante após o scanf bem-sucedido.
+            printf("AVISO: ID de turma nova %d e invalido. Turma nao alterada.\n", id_turma_nova);
         }
+    }
+    
+    if (!alterado) {
+        printf("AVISO: Nenhum dado alterado.\n");
+        return 0;
+    }
+    
+    printf("SUCESSO: Edicao de dados concluida.\n");
+    return 1;
+}
 
-        // --- 3.3. BLOQUEIO DE ACESSO (Guardrail) ---
-        // Verifica se o usuário escolheu uma opção para a qual não tem permissão.
-        if (
-            (nivel_acesso < NIVEL_PROFESSOR && (opcao >= 1 && opcao <= 3)) || // Bloqueia CRUD (1-3) para ALUNO
-            (nivel_acesso < NIVEL_ADMIN && (opcao >= 5 && opcao <= 8))       // Bloqueia ADMIN features (5-8) para PROF/ALUNO
-        ) {
-            if (opcao != 4 && opcao != 9) { // Permite 4 (Relatório) e 9 (Sair), mesmo que estejam no range.
-                printf("ACESSO NEGADO: Esta opcao nao esta disponivel para seu nivel de usuario.\n");
-                continue; // Pula o resto do loop e volta para o início do menu.
-            }
+// --- 6. Gerenciamento (DELETE - Exclusão Lógica) ---
+
+/**
+ * @brief Realiza a exclusão lógica de um aluno pelo RA.
+ * A vaga na turma é liberada, e o aluno é marcado como inativo.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param ra RA do aluno a ser inativado.
+ * @return int 1 se o aluno foi excluído logicamente, 0 caso contrário.
+ */
+int excluir_aluno_por_ra(DadosSistema *sistema, const char *ra) {
+    int idx_aluno = buscar_aluno_por_ra(sistema, ra);
+    if (idx_aluno == -1) {
+        printf("ERRO: Aluno com RA '%s' nao encontrado ou ja inativo.\n", ra);
+        return 0;
+    }
+
+    // Libera a vaga na turma
+    int idx_turma = buscar_turma_por_id(sistema, sistema->alunos[idx_aluno].id_turma);
+    if (idx_turma != -1) {
+        sistema->turmas[idx_turma].vagas_ocupadas--;
+    }
+
+    // Exclusão Lógica
+    sistema->alunos[idx_aluno].ativo = 0;
+    sistema->total_alunos--;
+
+    printf("SUCESSO: Aluno '%s' (RA: %s) excluido (logicamente) do sistema.\n", 
+           sistema->alunos[idx_aluno].nome, ra);
+    return 1;
+}
+
+/**
+ * @brief Realiza a exclusão lógica de uma turma e de todos os seus alunos (Cascata).
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param id ID da turma a ser inativada.
+ * @return int 1 se a turma foi excluída logicamente, 0 caso contrário.
+ */
+int excluir_turma_por_id(DadosSistema *sistema, int id) {
+    int idx_turma = buscar_turma_por_id(sistema, id);
+    if (idx_turma == -1) {
+        printf("ERRO: Turma ID %d nao encontrada ou ja inativa.\n", id);
+        return 0;
+    }
+    
+    int alunos_excluidos = 0;
+    // Exclusão em Cascata (inativa todos os alunos vinculados à turma)
+    for (int i = 0; i < MAX_ALUNOS; i++) {
+        // Verifica se o aluno está ativo E pertence a esta turma
+        if (sistema->alunos[i].ativo == 1 && sistema->alunos[i].id_turma == id) {
+            sistema->alunos[i].ativo = 0; // Inativa o aluno
+            sistema->total_alunos--;      // Reduz o contador global
+            alunos_excluidos++;
         }
+    }
+    
+    // Exclusão Lógica da Turma
+    sistema->turmas[idx_turma].ativo = 0;
+    sistema->turmas[idx_turma].vagas_ocupadas = 0; // Zera as vagas ocupadas, pois todos os alunos foram inativados
+    sistema->total_turmas--;
+
+    printf("SUCESSO: Turma '%s' (ID %d) excluida (logicamente).\n", 
+           sistema->turmas[idx_turma].nome, id);
+    printf("AVISO: %d alunos vinculados tambem foram inativados (cascata).\n", alunos_excluidos);
+    return 1;
+}
+
+// --- 7. Lógica e Relatórios (READ) ---
+
+/**
+ * @brief Função auxiliar de troca para o algoritmo de ordenação (ex: Bubble Sort).
+ * @param a Ponteiro para o primeiro aluno.
+ * @param b Ponteiro para o segundo aluno.
+ */
+void trocar_alunos(Aluno *a, Aluno *b) {
+    Aluno temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+/**
+ * @brief Ordena a lista de alunos ativos no sistema por nome (Bubble Sort simples).
+ * Nota: Uma implementação mais eficiente como QuickSort seria recomendada em um sistema real.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ */
+void ordenar_alunos_por_nome(DadosSistema *sistema) {
+    int i, j;
+    
+    // Implementação Bubble Sort simplificada
+    for (i = 0; i < MAX_ALUNOS - 1; i++) {
+        if (sistema->alunos[i].ativo == 0) continue; // Ignora inativos
         
-        // 3.4. Processamento da opção escolhida.
-        switch (opcao) {
-            case 1: { // Cadastrar Turma (PROF/ADMIN)
-                char nome[TAM_NOME];
-                int vagas;
-                printf("Nome da Turma: ");
-                // Lê o nome da turma de forma segura (fgets) e remove o '\n'.
-                fgets(nome, TAM_NOME, stdin);
-                nome[strcspn(nome, "\n")] = 0;
-                printf("Vagas Maximas: ");
-                scanf("%d", &vagas);
-                limpar_buffer();
-                
-                if (adicionar_turma(&sistema, nome, vagas)) {
-                    printf("SUCESSO: Turma '%s' cadastrada.\n", nome); 
-                    salvar_dados(&sistema); // Salva as alterações no arquivo.
-                } else {
-                    printf("ERRO: Nao foi possivel cadastrar a turma (limite atingido ou erro interno).\n");
-                }
-                break;
+        for (j = i + 1; j < MAX_ALUNOS; j++) {
+             if (sistema->alunos[j].ativo == 0) continue; // Ignora inativos
+            
+            // Compara os nomes. Se o aluno[i] for maior que aluno[j], troca
+            if (strcmp(sistema->alunos[i].nome, sistema->alunos[j].nome) > 0) {
+                trocar_alunos(&sistema->alunos[i], &sistema->alunos[j]);
             }
-            case 2: { // Cadastrar Aluno (PROF/ADMIN)
-                listar_todas_turmas(&sistema); // Ajuda o usuário a escolher o ID da turma.
-                char nome[TAM_NOME], ra[TAM_RA];
-                int id_turma;
-                
-                printf("Nome do Aluno: ");
-                fgets(nome, TAM_NOME, stdin);
-                nome[strcspn(nome, "\n")] = 0;
-                
-                printf("RA (max %d digitos): ", TAM_RA - 1);
-                fgets(ra, TAM_RA, stdin);
-                ra[strcspn(ra, "\n")] = 0;
-                
-                printf("ID da Turma: ");
-                if (scanf("%d", &id_turma) != 1) { 
-                    limpar_buffer(); 
-                    printf("ERRO: ID de turma invalido.\n"); 
-                    break; 
-                }
-                limpar_buffer();
-                
-                if (adicionar_aluno(&sistema, nome, ra, id_turma)) {
-                    printf("SUCESSO: Aluno '%s' (RA: %s) adicionado a Turma ID %d.\n", nome, ra, id_turma);
-                    salvar_dados(&sistema);
-                }
-                break;
-            }
-            case 3: { // Lançar Notas e Recalcular Média (PROF/ADMIN)
-                char ra[TAM_RA];
-                float n1, n2, n3;
-                printf("RA do Aluno: ");
-                fgets(ra, TAM_RA, stdin);
-                ra[strcspn(ra, "\n")] = 0;
-                
-                // Leitura das notas com tratamento de erro imediato
-                printf("Nota 1: ");
-                if (scanf("%f", &n1) != 1) { limpar_buffer(); printf("Entrada invalida.\n"); break; }
-                printf("Nota 2: ");
-                if (scanf("%f", &n2) != 1) { limpar_buffer(); printf("Entrada invalida.\n"); break; }
-                printf("Nota 3: ");
-                if (scanf("%f", &n3) != 1) { limpar_buffer(); printf("Entrada invalida.\n"); break; }
-                limpar_buffer();
-                
-                // Passa o nível de acesso para a função fazer a verificação interna (se necessário)
-                if (lancar_notas_e_atualizar_media(&sistema, ra, n1, n2, n3, nivel_acesso)) {
-                    salvar_dados(&sistema);
-                }
-                break;
-            }
-            case 4: { // Gerar Relatório de Turma (TODOS)
-                int id_turma;
-                listar_todas_turmas(&sistema);
-                printf("ID da Turma para Relatorio: ");
-                if (scanf("%d", &id_turma) != 1) { limpar_buffer(); printf("ERRO: ID de turma invalido.\n"); break; }
-                limpar_buffer();
-                gerar_relatorio_turma(&sistema, id_turma);
-                break;
-            }
-            case 5: { // Ordenar Alunos por Nome (ADMIN)
-                if (sistema.total_alunos == 0) { 
-                    printf("AVISO: Nao ha alunos para ordenar.\n"); 
-                    break; 
-                }
-                ordenar_alunos_por_nome(&sistema); // Chama a função de ordenação (ex: Quicksort, Bubble Sort).
-                salvar_dados(&sistema); 
-                printf("SUCESSO: Lista de alunos ordenada por nome e salva.\n");
-                break;
-            }
-            case 6: { // EDITAR Dados do Aluno (ADMIN)
-                listar_todas_turmas(&sistema);
-                char ra_antigo[TAM_RA], nome_novo[TAM_NOME];
-                int id_turma_nova = 0; // '0' é um valor de controle que significa 'manter turma'.
-                
-                printf("RA do Aluno para editar: ");
-                fgets(ra_antigo, TAM_RA, stdin);
-                ra_antigo[strcspn(ra_antigo, "\n")] = 0;
-                
-                printf("Novo Nome do Aluno (Deixe Vazio para manter o atual): ");
-                fgets(nome_novo, TAM_NOME, stdin);
-                nome_novo[strcspn(nome_novo, "\n")] = 0;
-
-                printf("Novo ID da Turma (Digite 0 para manter a atual): ");
-                if (scanf("%d", &id_turma_nova) != 1) { 
-                    limpar_buffer(); 
-                    id_turma_nova = 0; 
-                }
-                limpar_buffer();
-
-                if (editar_dados_aluno(&sistema, ra_antigo, nome_novo, id_turma_nova)) {
-                    salvar_dados(&sistema);
-                }
-                break;
-            }
-            case 7: { // EXCLUIR Aluno (Lógico) (ADMIN)
-                char ra[TAM_RA];
-                printf("RA do Aluno para exclusao: ");
-                fgets(ra, TAM_RA, stdin);
-                ra[strcspn(ra, "\n")] = 0;
-
-                if (excluir_aluno_por_ra(&sistema, ra)) {
-                    salvar_dados(&sistema);
-                }
-                break;
-            }
-            case 8: { // EXCLUIR Turma (Lógico com Exclusão em Cascata) (ADMIN)
-                listar_todas_turmas(&sistema);
-                int id;
-                printf("ID da Turma para exclusao: ");
-                if (scanf("%d", &id) != 1) { limpar_buffer(); printf("ERRO: ID de turma invalido.\n"); break; }
-                limpar_buffer();
-
-                if (excluir_turma_por_id(&sistema, id)) {
-                    salvar_dados(&sistema); // Salva após a exclusão da turma e dos alunos relacionados (cascata).
-                }
-                break;
-            }
-            case 9: // Sair
-                printf("Encerrando o Sistema Academico...\n");
-                salvar_dados(&sistema); // Garante que a última versão dos dados seja salva.
-                printf("Ate logo!\n");
-                break;
-            default:
-                // Trata opções inválidas (e a opção '0' de entradas não numéricas).
-                printf("Opcao invalida. Por favor, escolha uma opcao valida.\n");
-                break;
         }
-        
-    } while (opcao != 9); // O loop continua enquanto a opção 9 (Sair) não for escolhida.
+    }
+    // A mensagem de sucesso é dada no main.c
+}
 
-    return 0; // Retorno de sucesso.
+/**
+ * @brief Gera e exibe o relatório de todos os alunos ativos em uma turma.
+ * @param sistema Ponteiro para a estrutura DadosSistema.
+ * @param id_turma ID da turma para a qual o relatório será gerado.
+ */
+void gerar_relatorio_turma(const DadosSistema *sistema, int id_turma) {
+    int idx_turma = buscar_turma_por_id(sistema, id_turma);
+    if (idx_turma == -1) {
+        printf("ERRO: Turma ID %d nao encontrada ou inativa.\n", id_turma);
+        return;
+    }
+    
+    const Turma *turma = &sistema->turmas[idx_turma];
+    printf("\n--- RELATORIO: Turma %s (ID %d) ---\n", turma->nome, turma->id);
+    printf("Total de Vagas: %d | Ocupadas: %d\n", turma->vagas_maximas, turma->vagas_ocupadas);
+    printf("------------------------------------------------------------------------------------------------\n");
+    printf("| %-10s | %-40s | %5s | %5s | %5s | %5s | %-8s |\n", 
+           "RA", "Nome", "N1", "N2", "N3", "Media", "Situacao");
+    printf("------------------------------------------------------------------------------------------------\n");
+
+    int alunos_na_turma = 0;
+    for (int i = 0; i < MAX_ALUNOS; i++) {
+        // Verifica se o aluno está ativo E pertence a esta turma
+        if (sistema->alunos[i].ativo == 1 && sistema->alunos[i].id_turma == id_turma) {
+            const Aluno *aluno = &sistema->alunos[i];
+            
+            // Determina a Situação
+            const char *situacao;
+            if (aluno->media_final >= 7.0f) {
+                situacao = "Aprovado";
+            } else if (aluno->media_final >= 5.0f) {
+                situacao = "Recup.";
+            } else {
+                situacao = "Reprovado";
+            }
+
+            printf("| %-10s | %-40s | %5.2f | %5.2f | %5.2f | %5.2f | %-8s |\n", 
+                   aluno->ra, 
+                   aluno->nome, 
+                   aluno->notas[0], 
+                   aluno->notas[1], 
+                   aluno->notas[2], 
+                   aluno->media_final,
+                   situacao);
+            alunos_na_turma++;
+        }
+    }
+
+    if (alunos_na_turma == 0) {
+        printf("|                                        Nenhum aluno ativo nesta turma.                                        |\n");
+    }
+    printf("------------------------------------------------------------------------------------------------\n");
 }
